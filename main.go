@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
     "encoding/json"
 	"fmt"
+	"io"
+    "io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/gorilla/handlers"
     "github.com/gorilla/mux"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/postgres"
@@ -88,6 +92,44 @@ func GetCandidate(w http.ResponseWriter, r *http.Request) {
     }
 }
 
+func DownloadCandidateCv(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+
+	streamPDFbytes, err := ioutil.ReadFile(fmt.Sprintf("/tmp/%s-cv.pdf", vars["candidateId"]))
+
+	if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+	}
+
+	b := bytes.NewBuffer(streamPDFbytes)
+
+	w.Header().Set("Content-type", "application/pdf")
+
+	if _, err := b.WriteTo(w); err != nil { // <----- here!
+		fmt.Fprintf(w, "%s", err)
+	}
+}
+
+
+func UploadCandidateCv(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+
+    var buffer bytes.Buffer
+    // in your case file would be fileupload
+    file, _, err := r.FormFile("file")
+    if err != nil {
+        panic(err)
+    }
+	
+	io.Copy(&buffer, file)
+
+	log.Println(fmt.Sprintf("/tmp/%s-cv.pdf", vars["candidateId"]))
+	ioutil.WriteFile(fmt.Sprintf("/tmp/%s-cv.pdf", vars["candidateId"]), buffer.Bytes(), 0644)
+    
+    buffer.Reset()
+}
+
 func EditStage(w http.ResponseWriter, r *http.Request) {
 	db := getDB()
 
@@ -145,25 +187,30 @@ func getDB() *gorm.DB {
 func main() {
 	db := getDB()
 
-	// Migrations
+	log.Println("Running migrations...")
 	db.AutoMigrate(&Candidate{})
 	db.AutoMigrate(&Stage{})
 
+	log.Println("Setting up router...")
 
+	corsObj:=handlers.AllowedOrigins([]string{"*"})
     r := mux.NewRouter()
 	r.HandleFunc("/", HomeHandler)
 	r.HandleFunc("/candidate/", ListCandidate).Methods("GET")
 	r.HandleFunc("/candidate/", NewCandidate).Methods("POST")
 	r.HandleFunc("/candidate/{candidateId}/", GetCandidate).Methods("GET")
+	r.HandleFunc("/candidate/{candidateId}/cv/", UploadCandidateCv).Methods("POST")
 	r.HandleFunc("/candidate/{candidateId}/stages/{stageId}/", EditStage).Methods("POST")
 	r.HandleFunc("/candidate/{candidateId}/stages/{stageId}/pass/", PassStage).Methods("POST")
 	r.HandleFunc("/candidate/{candidateId}/stages/{stageId}/fail/", FailStage).Methods("POST")
-	
+	r.HandleFunc("/candidate/{candidateId}/cv/", DownloadCandidateCv).Methods("GET")
+
+	port := 4000
+	log.Println(fmt.Sprintf("Listening to port %d", port))
 	srv := &http.Server{
-        Handler:      r,
-        Addr:         "127.0.0.1:4000",
-        // Good practice: enforce timeouts for servers you create!
-        WriteTimeout: 15 * time.Second,
+		Handler:      handlers.CORS(corsObj)(r),
+		Addr:         fmt.Sprintf(":%d", port),
+		WriteTimeout: 15 * time.Second,
         ReadTimeout:  15 * time.Second,
     }
 
